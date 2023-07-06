@@ -55,7 +55,7 @@ fn main() {
 
             for (ext_name, extractor) in &extractors {
                 let start_time = std::time::Instant::now();
-                let result = extractor.extract(&egraph, &egraph.roots);
+                let mut result = extractor.extract(&egraph, &egraph.roots);
                 let elapsed = start_time.elapsed();
                 for &root in &egraph.roots {
                     let msg = format!(

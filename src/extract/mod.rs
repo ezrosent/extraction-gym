@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 pub use crate::*;
 
 pub mod bottom_up;
@@ -19,21 +21,27 @@ pub trait Extractor: Sync {
 #[derive(Clone)]
 pub struct ExtractionResult {
     pub choices: Vec<Id>,
+    tree_memo: HashMap<Id, Cost>,
 }
 
 impl ExtractionResult {
     pub fn new(n_classes: usize) -> Self {
         ExtractionResult {
             choices: vec![0; n_classes],
+            tree_memo: HashMap::default(),
         }
     }
 
-    pub fn tree_cost(&self, egraph: &SimpleEGraph, root: Id) -> Cost {
+    pub fn tree_cost(&mut self, egraph: &SimpleEGraph, root: Id) -> Cost {
+        if let Some(&cost) = self.tree_memo.get(&root) {
+            return cost;
+        }
         let node = &egraph[root].nodes[self.choices[root]];
         let mut cost = node.cost;
         for &child in &node.children {
             cost += self.tree_cost(egraph, child);
         }
+        self.tree_memo.insert(root, cost);
         cost
     }
 
@@ -41,12 +49,13 @@ impl ExtractionResult {
     pub fn dag_cost(&self, egraph: &SimpleEGraph, root: Id) -> Cost {
         let mut costs = vec![INFINITY; egraph.classes.len()];
         let mut todo = vec![root];
-        while !todo.is_empty() {
-            let i = todo.pop().unwrap();
+        while let Some(i) = todo.pop() {
             let node = &egraph[i].nodes[self.choices[i]];
             costs[i] = node.cost;
             for &child in &node.children {
-                todo.push(child);
+                if costs[child] == INFINITY {
+                    todo.push(child);
+                }
             }
         }
         costs.iter().filter(|c| **c != INFINITY).sum()
