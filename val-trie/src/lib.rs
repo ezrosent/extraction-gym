@@ -44,5 +44,6 @@ pub(crate) mod set;
 #[cfg(test)]
 pub(crate) mod test_workloads;
 
+pub use group::Group;
 pub use map::HashMap;
 pub use set::HashSet;

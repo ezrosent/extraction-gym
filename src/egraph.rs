@@ -20,12 +20,13 @@ impl std::ops::Index<Id> for SimpleEGraph {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Class {
     pub id: Id,
     pub nodes: Vec<Node>,
 }
 
+#[derive(Hash, PartialEq, Eq, Clone)]
 pub struct Node {
     pub op: String,
     pub cost: Cost,

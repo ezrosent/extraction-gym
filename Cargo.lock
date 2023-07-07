@@ -235,6 +235,7 @@ dependencies = [
  "ordered-float",
  "pico-args",
  "rayon",
+ "val-trie",
 ]
 
 [[package]]
