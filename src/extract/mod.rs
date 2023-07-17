@@ -4,6 +4,7 @@ pub use crate::*;
 
 pub mod bottom_up;
 pub mod greedy_dag;
+pub mod zdd;
 
 #[cfg(feature = "ilp-cbc")]
 pub mod ilp_cbc;

@@ -276,6 +276,7 @@ dependencies = [
  "ordered-float",
  "pico-args",
  "val-trie",
+ "zdds",
 ]
 
 [[package]]

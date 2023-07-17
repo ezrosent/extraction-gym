@@ -122,8 +122,8 @@ impl<T: Hash + Eq + Clone> HashSet<T> {
     }
 }
 
-impl<T: PartialEq> PartialEq for HashSet<T> {
-    fn eq(&self, other: &HashSet<T>) -> bool {
+impl<T: PartialEq, G> PartialEq for HashSet<T, G> {
+    fn eq(&self, other: &HashSet<T, G>) -> bool {
         self.len == other.len && (Rc::ptr_eq(&self.node, &other.node) || self.node == other.node)
     }
 }

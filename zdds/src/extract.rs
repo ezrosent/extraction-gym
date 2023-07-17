@@ -3,6 +3,7 @@ use std::{cmp, hash::Hash, mem, time::Instant};
 
 use hashbrown::hash_map::Entry;
 use log::debug;
+use ordered_float::NotNan;
 use petgraph::{prelude::NodeIndex, stable_graph::StableDiGraph, visit::Dfs};
 
 use crate::{
@@ -78,6 +79,10 @@ pub(crate) fn extractor<'a, E: Egraph, F: ENodeFilter<E::ENodeId>>(
     );
     extractor
 }
+
+// TODO: re-do greedy, make it simpler to start with. Then make it
+// cost-parametric from the start.
+// _then_ see if we can do the "top-down seeding" or if that's too much
 
 pub(crate) fn greedy_costs<E: Egraph>(
     egraph: &mut E,
@@ -301,38 +306,42 @@ impl<T: Eq + Hash> ENodeFilter<T> for SetFilter<T> {
     }
 }
 
-// pub(crate) struct TreeCost(Option<NotNan<f64>>);
-//
-// pub(crate) trait CostSummary: Default {
-//     type NodeId;
-//     fn cost(&self) -> Cost;
-//     fn min(&self, other: &Self) -> Self;
-//     fn singleton(node: Self::NodeId, cost: Cost) -> Self;
-//     fn combine(&mut self, other: &Self);
-// }
-//
-// impl CostSummary for TreeCost {
-//     type NodeId = ();
-//     fn cost(&self) -> Cost {
-//
-//         self.unwrap_or(NotNan::from(f64::INFINITY).unwrap().into_inner())
-//     }
-//     fn min(&self, other: &Option<NotNan<f64>>) -> Self {
-//         match (self, other) {
-//             (None, None) => None,
-//             (Some(x), None) | (None, Some(x)) => Some(*x),
-//             (Some(x), Some(y)) => Some(cmp::min(*x, *y)),
-//         }
-//     }
-//
-//     fn singleton((): (), cost: Cost) -> Self {
-//         Some(cost)
-//     }
-//
-//     fn combine(&mut self, other: &Self) {
-//         match (self, other) {
-//             (_, None) | (None, _) => *self = None,
-//             (Some(x), Some(y)) => *self = Some(*x + *y),
-//         }
-//     }
-// }
+/// A summary of the cost of a node or class.
+///
+/// CostSummaries are used to customize the "update rule" for greedy extraction
+/// algorithms.
+pub(crate) trait CostSummary<NodeId>: Default {
+    fn cost(&self) -> Cost;
+    fn min(&self, other: &Self) -> Self;
+    fn singleton(node: NodeId, cost: Cost) -> Self;
+    fn combine(&mut self, other: &Self);
+}
+
+#[derive(Default)]
+pub(crate) struct TreeCost(Option<NotNan<f64>>);
+
+impl<NodeId> CostSummary<NodeId> for TreeCost {
+    fn cost(&self) -> Cost {
+        self.0.unwrap_or_else(|| Cost::new(f64::INFINITY).unwrap())
+    }
+
+    fn min(&self, other: &TreeCost) -> Self {
+        match (self.0, other.0) {
+            (None, None) => TreeCost::default(),
+            (None, Some(x)) | (Some(x), None) => TreeCost(Some(x)),
+            (Some(x), Some(y)) => TreeCost(Some(cmp::min(x, y))),
+        }
+    }
+
+    fn singleton(_: NodeId, cost: Cost) -> Self {
+        TreeCost(Some(cost))
+    }
+
+    fn combine(&mut self, other: &Self) {
+        match (&mut self.0, other.0) {
+            (None, _) => {}
+            (_, None) => *self = Self::default(),
+            (Some(x), Some(y)) => *x += y,
+        }
+    }
+}

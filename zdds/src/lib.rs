@@ -5,6 +5,7 @@ pub(crate) mod cycle_patch;
 pub(crate) mod egraph;
 pub(crate) mod extract;
 pub(crate) mod fixed_cache;
+pub(crate) mod greedy;
 pub(crate) mod zdd;
 
 #[cfg(test)]
