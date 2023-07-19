@@ -244,7 +244,7 @@ impl<E: Egraph> PureZddExtractor<E> {
         let pool_delta = self.bot.pool().size().saturating_sub(start_nodes);
         let end_gcs = self.bot.pool().num_gcs();
         if (end_gcs > start_gcs || pool_delta > self.node_limit)
-            && composite.count_nodes(&mut self.visited_set) > self.node_limit
+            && composite.count_nodes() > self.node_limit
         {
             composite.freeze();
         }
@@ -279,7 +279,7 @@ impl<E: Egraph> PureZddExtractor<E> {
         let pool_delta = self.bot.pool().size().saturating_sub(start_nodes);
         let end_gcs = self.bot.pool().num_gcs();
         if (end_gcs > start_gcs || pool_delta > self.node_limit)
-            && composite.count_nodes(&mut self.visited_set) > self.node_limit
+            && composite.count_nodes() > self.node_limit
         {
             composite.freeze();
         }

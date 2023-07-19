@@ -5,7 +5,7 @@ use std::{cell::RefCell, cmp, hash::Hash, marker::PhantomData, rc::Rc};
 use crate::{
     egraph::{Cost, Pool},
     extract::ENodeFilter,
-    Egraph, HashMap, Zdd,
+    Egraph, HashMap, HashSet, Zdd, ZddPool,
 };
 
 // TODO: remove extraction results
@@ -19,7 +19,7 @@ type GreedyDag<'a, E: Egraph> = FixedPointSolver<'a, E, DagCost<<E as Egraph>::E
 pub(crate) type AnalysisResult<'a, E, C> =
     HashMap<<E as Egraph>::EClassId, NodeState<<E as Egraph>::ENodeId, Wrapper<C>>>;
 
-pub(crate) struct FixedPointSolver<'a, E: Egraph, C: CostSummary<E::ENodeId>> {
+pub(crate) struct FixedPointSolver<'a, E: Egraph, C: EgraphSummary<E::ENodeId>> {
     class_guesses: HashMap<E::EClassId, NodeState<E::ENodeId, Wrapper<C>>>,
     egraph: &'a mut E,
 }
@@ -39,7 +39,7 @@ fn compute_costs<E: Egraph>(egraph: &mut E) -> HashMap<E::ENodeId, Cost> {
     costs
 }
 
-impl<'a, E: Egraph, C: CostSummary<E::ENodeId> + Clone + Eq> FixedPointSolver<'a, E, C> {
+impl<'a, E: Egraph, C: EgraphSummary<E::ENodeId> + Clone + Eq> FixedPointSolver<'a, E, C> {
     pub(crate) fn new(
         egraph: &'a mut E,
         filter: &impl ENodeFilter<E::ENodeId>,
@@ -89,9 +89,17 @@ impl<'a, E: Egraph, C: CostSummary<E::ENodeId> + Clone + Eq> FixedPointSolver<'a
     ) -> Wrapper<C> {
         let mut classes = pool.class_vec();
         self.egraph.get_children(node, &mut classes);
+        // Short-circuit: return None if any of the operands are none.
+        if classes
+            .iter()
+            .any(|class| self.class_guesses[class].cost.0.is_none())
+        {
+            return Wrapper::default();
+        }
+
         let mut cost = Wrapper::<C>::singleton(state, node.clone());
         for class in classes.drain(..) {
-            cost.combine(&self.class_guesses[&class].cost)
+            cost.combine(&self.class_guesses[&class].cost, state)
         }
         cost
     }
@@ -110,7 +118,7 @@ impl<'a, E: Egraph, C: CostSummary<E::ENodeId> + Clone + Eq> FixedPointSolver<'a
         let mut cur = self.class_guesses[class].clone();
         for node in nodes.drain(..) {
             let cost = self.compute_cost(&node, pool, state);
-            changed |= cur.update(&node, &cost);
+            changed |= cur.update(&node, &cost, state);
         }
 
         if changed {
@@ -135,9 +143,9 @@ impl<N: Clone, C: Clone> Clone for NodeState<N, C> {
     }
 }
 
-impl<N: Clone, C: CostSummary<N> + Eq> NodeState<N, C> {
-    fn update(&mut self, node: &N, c: &C) -> bool {
-        if self.cost.min_update(c) {
+impl<N: Clone, C: EgraphSummary<N> + Eq> NodeState<N, C> {
+    fn update(&mut self, node: &N, c: &C, state: &mut C::State) -> bool {
+        if self.cost.min_update(c, state) {
             self.node_id = Some(node.clone());
             true
         } else {
@@ -146,6 +154,7 @@ impl<N: Clone, C: CostSummary<N> + Eq> NodeState<N, C> {
     }
 }
 
+/// An EgraphSummary adjoined with a "bottom" or "infinite" element.
 #[derive(PartialEq, Eq, Clone)]
 pub(crate) struct Wrapper<C>(Option<C>);
 
@@ -161,21 +170,21 @@ impl<C> Default for Wrapper<C> {
     }
 }
 
-impl<N, C: CostSummary<N> + Clone> CostSummary<N> for Wrapper<C> {
+impl<N, C: EgraphSummary<N> + Clone> EgraphSummary<N> for Wrapper<C> {
     type State = C::State;
-    fn combine(&mut self, other: &Self) {
+    fn combine(&mut self, other: &Self, state: &mut Self::State) {
         match (&mut self.0, &other.0) {
             (None, _) => {}
             (_, None) => *self = Self::default(),
-            (Some(x), Some(y)) => x.combine(y),
+            (Some(x), Some(y)) => x.combine(y, state),
         }
     }
 
-    fn min(&self, other: &Self) -> Self {
+    fn min(&self, other: &Self, state: &mut Self::State) -> Self {
         match (&self.0, &other.0) {
             (None, None) => Wrapper::default(),
             (None, Some(x)) | (Some(x), None) => Wrapper(Some(x.clone())),
-            (Some(x), Some(y)) => Wrapper(Some(x.min(y))),
+            (Some(x), Some(y)) => Wrapper(Some(x.min(y, state))),
         }
     }
 
@@ -184,27 +193,18 @@ impl<N, C: CostSummary<N> + Clone> CostSummary<N> for Wrapper<C> {
     }
 }
 
-// TODO: lots to update here with CostSummary:
-// * This State arg can be something like a ZddPool + intern table.
-// * CostSummary should implement Eq and min_update should be a basic thing that
-// does min, sees if it equals self, and if it doesn't, assigns and returns
-// true.
-
-// At that point it's a lot closer to a basic semiring with some extra state
-// attached. An ENodeSemiring?
-
 /// A summary of the cost of a node or class.
 ///
 /// CostSummaries are used to customize the "update rule" for greedy extraction
 /// algorithms.
-pub(crate) trait CostSummary<NodeId>: Sized {
+pub(crate) trait EgraphSummary<NodeId>: Sized {
     type State;
-    fn min(&self, other: &Self) -> Self;
-    fn min_update(&mut self, other: &Self) -> bool
+    fn min(&self, other: &Self, state: &mut Self::State) -> Self;
+    fn min_update(&mut self, other: &Self, state: &mut Self::State) -> bool
     where
         Self: Eq,
     {
-        let res = self.min(other);
+        let res = self.min(other, state);
         if &res != self {
             *self = res;
             true
@@ -213,15 +213,15 @@ pub(crate) trait CostSummary<NodeId>: Sized {
         }
     }
     fn singleton(state: &mut Self::State, node: NodeId) -> Self;
-    fn combine(&mut self, other: &Self);
+    fn combine(&mut self, other: &Self, state: &mut Self::State);
 }
 
 #[derive(Default, Clone, PartialEq, Eq)]
 pub(crate) struct TreeCost(Cost);
 
-impl<NodeId: Hash + Eq> CostSummary<NodeId> for TreeCost {
+impl<NodeId: Hash + Eq> EgraphSummary<NodeId> for TreeCost {
     type State = HashMap<NodeId, Cost>;
-    fn min(&self, other: &TreeCost) -> Self {
+    fn min(&self, other: &TreeCost, _: &mut Self::State) -> Self {
         TreeCost(cmp::min(self.0, other.0))
     }
 
@@ -229,7 +229,7 @@ impl<NodeId: Hash + Eq> CostSummary<NodeId> for TreeCost {
         TreeCost(state[&n])
     }
 
-    fn combine(&mut self, other: &Self) {
+    fn combine(&mut self, other: &Self, _: &mut Self::State) {
         self.0 += other.0;
     }
 }
@@ -253,34 +253,32 @@ impl val_trie::Group for AddCost {
 
 pub(crate) struct DagCost<T> {
     set: val_trie::HashSet<T, AddCost>,
-    costs: Rc<HashMap<T, Cost>>,
 }
 
 impl<T: Clone> Clone for DagCost<T> {
     fn clone(&self) -> Self {
         DagCost {
             set: self.set.clone(),
-            costs: self.costs.clone(),
         }
     }
 }
 
 impl<T: Hash + Eq + Clone> PartialEq for DagCost<T> {
     fn eq(&self, other: &Self) -> bool {
-        self.set == other.set && Rc::ptr_eq(&self.costs, &other.costs)
+        self.set == other.set
     }
 }
 
 impl<T: Hash + Eq + Clone> Eq for DagCost<T> {}
 
-impl<Node: Hash + Eq + Clone> CostSummary<Node> for DagCost<Node> {
-    type State = Rc<HashMap<Node, Cost>>;
+impl<Node: Hash + Eq + Clone> EgraphSummary<Node> for DagCost<Node> {
+    type State = HashMap<Node, Cost>;
 
-    fn combine(&mut self, other: &Self) {
-        self.set.union_agg(&other.set, |n| AddCost(self.costs[n]))
+    fn combine(&mut self, other: &Self, state: &mut Self::State) {
+        self.set.union_agg(&other.set, |n| AddCost(state[n]))
     }
 
-    fn min(&self, other: &Self) -> Self {
+    fn min(&self, other: &Self, _: &mut Self::State) -> Self {
         if self.set.agg().0 <= other.set.agg().0 {
             self.clone()
         } else {
@@ -291,9 +289,79 @@ impl<Node: Hash + Eq + Clone> CostSummary<Node> for DagCost<Node> {
     fn singleton(state: &mut Self::State, node: Node) -> Self {
         let mut set = val_trie::HashSet::<Node, AddCost>::default();
         set.insert_agg(node, |n| AddCost(state[n]));
-        DagCost {
-            set,
-            costs: state.clone(),
+        DagCost { set }
+    }
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub(crate) struct ZddNode(u32);
+
+pub(crate) struct ZddState<N> {
+    pool: ZddPool<ZddNode>,
+    nodes: HashMap<N, ZddNode>,
+    node_limit: usize,
+}
+
+impl<N: Hash + Eq + Clone> ZddState<N> {
+    fn get_node(&mut self, n: &N) -> ZddNode {
+        if let Some(res) = self.nodes.get(n) {
+            return *res;
+        }
+        let len = self.nodes.len();
+        let res = ZddNode(u32::try_from(len).unwrap());
+        self.nodes.insert(n.clone(), res);
+        res
+    }
+}
+
+pub(crate) struct ZddSummary<N> {
+    zdd: Zdd<ZddNode>,
+    _marker: PhantomData<*const N>,
+}
+
+impl<N> ZddSummary<N> {
+    fn new(zdd: Zdd<ZddNode>) -> ZddSummary<N> {
+        ZddSummary {
+            zdd,
+            _marker: PhantomData,
         }
     }
 }
+
+impl<N: Hash + Eq + Clone> EgraphSummary<N> for ZddSummary<N> {
+    type State = ZddState<N>;
+    fn min(&self, other: &Self, state: &mut Self::State) -> Self {
+        let mut res = self.zdd.clone();
+        res.merge(&other.zdd);
+        if res.count_nodes() > state.node_limit {
+            res.freeze();
+        }
+        ZddSummary::new(res)
+    }
+
+    fn combine(&mut self, other: &Self, state: &mut Self::State) {
+        self.zdd.join(&other.zdd);
+        if self.zdd.count_nodes() > state.node_limit {
+            self.zdd.freeze()
+        }
+    }
+
+    fn singleton(state: &mut Self::State, node: N) -> Self {
+        let zdd_node = state.get_node(&node);
+        ZddSummary::new(Zdd::singleton(state.pool.clone(), zdd_node))
+    }
+}
+
+// How to get extraction working:
+// 1. need to build "synthetic root"
+// 2. domain-specific for each cost function: greedy algorithms essentially work
+// as before where each node id is used as the "choice" for each e-class.
+//
+// For ZDD, need to extract set, then re-run greedy-DAG.
+//
+// Then, how to do hybrid greedy extraction?
+// 1. Keep track of "mentioned" sets (i.e. (union/union algebra)
+// 2. Keep track of greedy DAG
+// 3. Keep track of ZDD if mentioned set is < some threshold in size, greedy dag otherwise.
+// 4. If mentioned set > some threshold and any children are not forced, then
+// compute mininimum cost and add them to the greedy set at that node.

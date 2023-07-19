@@ -63,6 +63,8 @@ pub(crate) struct ZddPoolRep<T> {
     n_gcs: usize,
     cache: Cache<(NodeId, NodeId, Operation), NodeId>,
     roots: RootSet,
+    // Used for DFS
+    scratch_id_set: HashSet<NodeId>,
 }
 
 impl<T> ZddPoolRep<T> {
@@ -74,6 +76,7 @@ impl<T> ZddPoolRep<T> {
             n_gcs: 0,
             cache: Cache::new(cache_size),
             roots: Default::default(),
+            scratch_id_set: Default::default(),
         }
     }
     fn get_node(&self, node: NodeId) -> &Node<Val<T>> {
@@ -456,7 +459,16 @@ impl<T: Eq + Hash + Ord + Clone> ZddPoolRep<T> {
         self.union_nodes(node, hi)
     }
 
-    fn dfs(&self, node_id: NodeId, visited: &mut HashSet<NodeId>) {
+    fn dfs<R>(&mut self, node_id: NodeId, f: impl FnOnce(&HashSet<NodeId>) -> R) -> R {
+        let mut visited = mem::take(&mut self.scratch_id_set);
+        self.dfs_inner(node_id, &mut visited);
+        let res = f(&visited);
+        visited.clear();
+        self.scratch_id_set = visited;
+        res
+    }
+
+    fn dfs_inner(&self, node_id: NodeId, visited: &mut HashSet<NodeId>) {
         if !visited.insert(node_id) {
             return;
         }
@@ -464,8 +476,8 @@ impl<T: Eq + Hash + Ord + Clone> ZddPoolRep<T> {
             return;
         }
         let node = self.get_node(node_id);
-        self.dfs(node.hi, visited);
-        self.dfs(node.lo, visited);
+        self.dfs_inner(node.hi, visited);
+        self.dfs_inner(node.lo, visited);
     }
 
     fn mermaid_diagram(
@@ -587,6 +599,14 @@ pub struct Zdd<T> {
     root: Root,
 }
 
+impl<T> PartialEq for Zdd<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.root.node.get() == other.root.node.get() && Rc::ptr_eq(&self.pool.0, &other.pool.0)
+    }
+}
+
+impl<T> Eq for Zdd<T> {}
+
 impl<T> Clone for Zdd<T> {
     fn clone(&self) -> Zdd<T> {
         let root = self.pool_ref_mut().make_root(self.root_node());
@@ -621,7 +641,7 @@ impl<T: Eq + Ord + Hash + Clone> Zdd<T> {
         let (universe_size_min, universe_size_max) =
             self.pool_ref().universe_size(self.root_node(), &mut counts);
         Report {
-            zdd_size: self.count_nodes(&mut Default::default()),
+            zdd_size: self.count_nodes(),
             cache_hit_ratio: self.pool_ref().cache.hit_ratio(),
             cache_capacity: self.pool_ref().cache.capacity(),
             universe_size_min,
@@ -634,11 +654,9 @@ impl<T: Eq + Ord + Hash + Clone> Zdd<T> {
     ///
     /// This method consumes a set for storing visited nodes. This allows
     /// repeated calls to `count_nodes` to reuse allocations.
-    pub(crate) fn count_nodes(&self, visited: &mut HashSet<NodeId>) -> usize {
-        self.pool_ref().dfs(self.root_node(), visited);
-        let res = visited.len();
-        visited.clear();
-        res
+    pub(crate) fn count_nodes(&self) -> usize {
+        self.pool_ref_mut()
+            .dfs(self.root_node(), |visited| visited.len())
     }
 
     pub fn with_pool(pool: ZddPool<T>) -> Zdd<T> {
