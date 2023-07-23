@@ -1,16 +1,62 @@
 //! Routines for extracting DAGs of ENodes from an EGraph.
-use std::{cmp, hash::Hash, mem, time::Instant};
+use std::{hash::Hash, mem, time::Instant};
 
 use hashbrown::hash_map::Entry;
 use log::debug;
-use ordered_float::NotNan;
 use petgraph::{prelude::NodeIndex, stable_graph::StableDiGraph, visit::Dfs};
 
 use crate::{
     choose_nodes,
     egraph::{Cost, Pool},
-    Egraph, HashMap, HashSet,
+    greedy::{compute_costs, DagCost, FixedPointSolver, TreeCost, ZddState, ZddSummary},
+    Egraph, ExtractionChoices, HashMap, HashSet, ZddPool,
 };
+
+pub fn extract_greedy_new<E: Egraph>(egraph: &mut E) -> ExtractionChoices<E::EClassId, E::ENodeId> {
+    let mut cost = compute_costs(egraph);
+    let solver = FixedPointSolver::<E, TreeCost>::new(egraph, &NullFilter, &mut cost);
+    solver
+        .results()
+        .iter()
+        .filter_map(|(class, node)| Some((class.clone(), node.node_id.clone()?)))
+        .collect()
+}
+
+pub fn extract_greedy_dag_new<E: Egraph>(
+    egraph: &mut E,
+) -> ExtractionChoices<E::EClassId, E::ENodeId> {
+    extract_greedy_dag_with_filter(egraph, NullFilter)
+}
+
+fn extract_greedy_dag_with_filter<E: Egraph>(
+    egraph: &mut E,
+    filter: impl ENodeFilter<E::ENodeId>,
+) -> ExtractionChoices<E::EClassId, E::ENodeId> {
+    let mut cost = compute_costs(egraph);
+    let solver = FixedPointSolver::<E, DagCost<E::ENodeId>>::new(egraph, &filter, &mut cost);
+    solver
+        .results()
+        .iter()
+        .filter_map(|(class, node)| Some((class.clone(), node.node_id.clone()?)))
+        .collect()
+}
+
+pub fn extract_zdd_new<E: Egraph>(
+    egraph: &mut E,
+    node_limit: usize,
+    root: E::EClassId,
+) -> ExtractionChoices<E::EClassId, E::ENodeId> {
+    let cost = compute_costs(egraph);
+    let mut zdd_state = ZddState::new(node_limit, 1 << 25);
+    let zdds =
+        FixedPointSolver::<E, ZddSummary<E::ENodeId>>::new(egraph, &NullFilter, &mut zdd_state);
+    let result = &zdds.results()[&root];
+    let zdd_node = result.cost.cost().unwrap().clone();
+    let set = zdd_state
+        .min_cost_set(&zdd_node, |x| egraph.cost(x))
+        .unwrap();
+    extract_greedy_dag_with_filter(egraph, SetFilter(set.into_iter().collect()))
+}
 
 /// The type used to return DAGs of expressions during extraction.
 ///
@@ -305,4 +351,3 @@ impl<T: Eq + Hash> ENodeFilter<T> for SetFilter<T> {
         enodes.retain(|node| self.0.contains(node))
     }
 }
-

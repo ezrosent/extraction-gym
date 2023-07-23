@@ -20,13 +20,10 @@ fn main() {
 
     let extractors: IndexMap<&str, Box<dyn Extractor>> = [
         ("bottom-up", extract::bottom_up::BottomUpExtractor.boxed()),
+        // ("greedy-dag", extract::zdd::DagExtractor.boxed()),
         (
-            "greedy-dag",
-            extract::greedy_dag::GreedyDagExtractor.boxed(),
-        ),
-        (
-            "zdd-1024",
-            extract::zdd::ZddExtractor { node_limit: 1024 }.boxed(),
+            "zdd-256",
+            extract::zdd::ZddExtractor { node_limit: 256 }.boxed(),
         ),
         #[cfg(feature = "ilp-cbc")]
         ("ilp-cbc", extract::ilp_cbc::CbcExtractor.boxed()),

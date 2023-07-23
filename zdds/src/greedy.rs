@@ -1,20 +1,22 @@
 //! Greedy Extraction.
 
-use std::{cell::RefCell, cmp, hash::Hash, marker::PhantomData, rc::Rc};
+use std::{
+    cmp,
+    hash::{BuildHasherDefault, Hash},
+    marker::PhantomData,
+};
+
+use indexmap::IndexSet;
+use rustc_hash::FxHasher;
 
 use crate::{
     egraph::{Cost, Pool},
     extract::ENodeFilter,
-    Egraph, HashMap, HashSet, Zdd, ZddPool,
+    Egraph, HashMap, Zdd, ZddPool,
 };
 
 // TODO: remove extraction results
 // TODO: remove existing greedy implementation
-
-type GreedyTree<'a, E> = FixedPointSolver<'a, E, TreeCost>;
-// GreedyExtractor will check the actual bound.
-#[allow(type_alias_bounds)]
-type GreedyDag<'a, E: Egraph> = FixedPointSolver<'a, E, DagCost<<E as Egraph>::ENodeId>>;
 
 pub(crate) type AnalysisResult<'a, E, C> =
     HashMap<<E as Egraph>::EClassId, NodeState<<E as Egraph>::ENodeId, Wrapper<C>>>;
@@ -24,7 +26,7 @@ pub(crate) struct FixedPointSolver<'a, E: Egraph, C: EgraphSummary<E::ENodeId>> 
     egraph: &'a mut E,
 }
 
-fn compute_costs<E: Egraph>(egraph: &mut E) -> HashMap<E::ENodeId, Cost> {
+pub(crate) fn compute_costs<E: Egraph>(egraph: &mut E) -> HashMap<E::ENodeId, Cost> {
     let mut costs = HashMap::default();
     let mut node_vec = Vec::new();
     let mut classes = Vec::new();
@@ -298,18 +300,40 @@ pub(crate) struct ZddNode(u32);
 
 pub(crate) struct ZddState<N> {
     pool: ZddPool<ZddNode>,
-    nodes: HashMap<N, ZddNode>,
+    nodes: IndexSet<N, BuildHasherDefault<FxHasher>>,
     node_limit: usize,
 }
 
 impl<N: Hash + Eq + Clone> ZddState<N> {
+    pub(crate) fn new(node_limit: usize, cache_size: usize) -> ZddState<N> {
+        ZddState {
+            pool: ZddPool::with_cache_size(cache_size),
+            nodes: Default::default(),
+            node_limit,
+        }
+    }
+    pub(crate) fn min_cost_set(
+        &self,
+        zdd: &ZddSummary<N>,
+        get_cost: impl Fn(&N) -> Cost,
+    ) -> Option<Vec<N>> {
+        let (nodes, _) = zdd
+            .zdd
+            .min_cost_set(|node| get_cost(self.nodes.get_index(node.0 as usize).unwrap()))?;
+        Some(
+            nodes
+                .into_iter()
+                .map(|x| self.nodes.get_index(x.0 as usize).unwrap().clone())
+                .collect(),
+        )
+    }
     fn get_node(&mut self, n: &N) -> ZddNode {
-        if let Some(res) = self.nodes.get(n) {
-            return *res;
+        if let Some(res) = self.nodes.get_index_of(n) {
+            return ZddNode(res as u32);
         }
         let len = self.nodes.len();
         let res = ZddNode(u32::try_from(len).unwrap());
-        self.nodes.insert(n.clone(), res);
+        self.nodes.insert(n.clone());
         res
     }
 }
@@ -325,6 +349,20 @@ impl<N> ZddSummary<N> {
             zdd,
             _marker: PhantomData,
         }
+    }
+}
+
+impl<N> PartialEq for ZddSummary<N> {
+    fn eq(&self, other: &Self) -> bool {
+        self.zdd == other.zdd
+    }
+}
+
+impl<N> Eq for ZddSummary<N> {}
+
+impl<N> Clone for ZddSummary<N> {
+    fn clone(&self) -> Self {
+        ZddSummary::new(self.zdd.clone())
     }
 }
 

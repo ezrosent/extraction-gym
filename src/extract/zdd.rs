@@ -1,6 +1,10 @@
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    hash::{BuildHasher, BuildHasherDefault, Hasher},
+};
 
 use egraph_serialize::{ClassId, NodeId};
+use zdds::ExtractionChoices;
 
 use crate::{Cost, ExtractionResult, Extractor};
 
@@ -10,13 +14,22 @@ pub struct ZddExtractor {
 
 impl Extractor for ZddExtractor {
     fn extract(&self, egraph: &egraph_serialize::EGraph, roots: &[ClassId]) -> ExtractionResult {
-        assert_eq!(roots.len(), 1);
-        let root = &roots[0];
-        let (mut flat, flat_root) = FlatEgraph::new(egraph, root);
+        let (mut flat, flat_root) = FlatEgraph::new(egraph, roots);
 
-        let res = zdds::extract_zdd(&mut flat, flat_root, Some(self.node_limit))
-            .expect("extraction failed");
-        flat.convert_extract_result(&res)
+        let res = zdds::extract_zdd_new(&mut flat, flat_root, self.node_limit);
+        flat.convert_map(&res)
+    }
+}
+
+pub struct DagExtractor;
+
+impl Extractor for DagExtractor {
+    fn extract(&self, egraph: &egraph_serialize::EGraph, roots: &[ClassId]) -> ExtractionResult {
+        let (mut flat, flat_root) = FlatEgraph::new(egraph, roots);
+
+        let mut res = zdds::extract_greedy_dag_new(&mut flat);
+        res.remove(&flat_root);
+        flat.convert_map(&res)
     }
 }
 
@@ -40,7 +53,7 @@ struct FlatEgraph<'a> {
 }
 
 impl<'a> FlatEgraph<'a> {
-    fn new(eg: &'a egraph_serialize::EGraph, root: &ClassId) -> (Self, Id) {
+    fn new(eg: &'a egraph_serialize::EGraph, roots: &[ClassId]) -> (Self, Id) {
         let mut root_id = !0usize;
         let mut nodes = Vec::new();
         let mut classes = Vec::new();
@@ -56,14 +69,27 @@ impl<'a> FlatEgraph<'a> {
         }
         for (id, _) in eg.classes().iter() {
             class_ids.insert(id.clone(), classes.len());
-            if id == root {
-                root_id = classes.len();
-            }
             classes.push(Class {
                 id: id.clone(),
                 nodes: Vec::new(),
             });
         }
+
+        let root_node = nodes.len();
+
+        nodes.push(Node {
+            id: NodeId::from("__root__"),
+            cost: Default::default(),
+            children: roots.iter().map(|x| class_ids[x]).collect(),
+        });
+
+        let root_class = classes.len();
+
+        // now create a "synthetic" node with all of the roots as children.
+        classes.push(Class {
+            id: ClassId::from("__root__"),
+            nodes: vec![root_node],
+        });
 
         for ((_, src), dst) in eg.nodes.iter().zip(nodes.iter_mut()) {
             for child in &src.children {
@@ -83,8 +109,18 @@ impl<'a> FlatEgraph<'a> {
                 classes,
                 src: eg,
             },
-            root_id,
+            root_class,
         )
+    }
+
+    fn convert_map(&self, res: &ExtractionChoices<Id, Id>) -> ExtractionResult {
+        let mut converted = ExtractionResult::default();
+        for node in res.values().copied() {
+            let node = &self.nodes[node];
+            let class_id = self.src.nid_to_cid(&node.id);
+            converted.choose(class_id.clone(), node.id.clone());
+        }
+        converted
     }
 
     fn convert_extract_result(&self, res: &zdds::ExtractResult<Id>) -> ExtractionResult {
