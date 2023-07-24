@@ -118,6 +118,9 @@ impl<'a, E: Egraph, C: EgraphSummary<E::ENodeId> + Clone + Eq> FixedPointSolver<
         self.egraph.expand_class(class, &mut nodes);
         filter.filter(&mut nodes);
         let mut cur = self.class_guesses[class].clone();
+        if !cur.cost.can_update() {
+            return false;
+        }
         for node in nodes.drain(..) {
             let cost = self.compute_cost(&node, pool, state);
             changed |= cur.update(&node, &cost, state);
@@ -174,6 +177,9 @@ impl<C> Default for Wrapper<C> {
 
 impl<N, C: EgraphSummary<N> + Clone> EgraphSummary<N> for Wrapper<C> {
     type State = C::State;
+    fn can_update(&self) -> bool {
+        self.0.as_ref().map(C::can_update).unwrap_or(true)
+    }
     fn combine(&mut self, other: &Self, state: &mut Self::State) {
         match (&mut self.0, &other.0) {
             (None, _) => {}
@@ -201,6 +207,9 @@ impl<N, C: EgraphSummary<N> + Clone> EgraphSummary<N> for Wrapper<C> {
 /// algorithms.
 pub(crate) trait EgraphSummary<NodeId>: Sized {
     type State;
+    fn can_update(&self) -> bool {
+        true
+    }
     fn min(&self, other: &Self, state: &mut Self::State) -> Self;
     fn min_update(&mut self, other: &Self, state: &mut Self::State) -> bool
     where
@@ -368,10 +377,14 @@ impl<N> Clone for ZddSummary<N> {
 
 impl<N: Hash + Eq + Clone> EgraphSummary<N> for ZddSummary<N> {
     type State = ZddState<N>;
+    fn can_update(&self) -> bool {
+        false
+    }
     fn min(&self, other: &Self, state: &mut Self::State) -> Self {
         let mut res = self.zdd.clone();
         res.merge(&other.zdd);
-        if res.count_nodes() > state.node_limit {
+        let count = res.count_nodes();
+        if count > state.node_limit {
             res.freeze();
         }
         ZddSummary::new(res)
@@ -379,7 +392,8 @@ impl<N: Hash + Eq + Clone> EgraphSummary<N> for ZddSummary<N> {
 
     fn combine(&mut self, other: &Self, state: &mut Self::State) {
         self.zdd.join(&other.zdd);
-        if self.zdd.count_nodes() > state.node_limit {
+        let count = self.zdd.count_nodes();
+        if count > state.node_limit {
             self.zdd.freeze()
         }
     }

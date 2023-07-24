@@ -4,3 +4,4 @@ out.tsv
 output/
 out.json
 .vscode/
+.vscode/settings.json

@@ -133,7 +133,8 @@ impl<T: Eq + Hash + Ord + Clone> ZddPoolRep<T> {
         let mut mapping = HashMap::default();
         let roots = mem::take(&mut self.roots);
         for root in roots.iter() {
-            root.set(self.gc_traverse(root.get(), &mut mapping));
+            // root.set(self.gc_traverse(root.get(), &mut mapping));
+            root.set(self.gc_at(root.get(), &mut mapping));
         }
         self.roots = roots;
         self.nodes.clear();
@@ -163,6 +164,49 @@ impl<T: Eq + Hash + Ord + Clone> ZddPoolRep<T> {
         if self.should_gc() {
             self.gc_roots();
         }
+    }
+
+    fn gc_at(&mut self, start: NodeId, mapping: &mut HashMap<NodeId, NodeId>) -> NodeId {
+        mapping.insert(UNIT, UNIT);
+        mapping.insert(BOT, BOT);
+        let mut stack = vec![start];
+        while let Some(cur) = stack.pop() {
+            if mapping.contains_key(&cur) {
+                continue;
+            }
+            let Node { item, lo, hi } = self.get_node(cur).clone();
+
+            let mut iter = || -> Option<NodeId> {
+                let new_lo = *mapping.get(&lo)?;
+                let new_hi = *mapping.get(&hi)?;
+                Some(match &item {
+                    Val::Base(_) => {
+                        make_node_with_set(item.clone(), new_lo, new_hi, &mut self.scratch)
+                    }
+                    Val::Meta(n) => {
+                        let new_meta = *mapping.get(n)?;
+                        make_node_with_set(Val::Meta(new_meta), new_lo, new_hi, &mut self.scratch)
+                    }
+                })
+            };
+            if let Some(res) = iter() {
+                mapping.insert(cur, res);
+            } else {
+                stack.push(cur);
+                if mapping.get(&lo).is_none() {
+                    stack.push(lo);
+                }
+                if mapping.get(&hi).is_none() {
+                    stack.push(hi);
+                }
+                if let Val::Meta(n) = item {
+                    if mapping.get(&n).is_none() {
+                        stack.push(n);
+                    }
+                }
+            }
+        }
+        mapping[&start]
     }
 
     fn gc_traverse(&mut self, node_id: NodeId, mapping: &mut HashMap<NodeId, NodeId>) -> NodeId {

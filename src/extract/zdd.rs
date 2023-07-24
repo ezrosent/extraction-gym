@@ -16,7 +16,8 @@ impl Extractor for ZddExtractor {
     fn extract(&self, egraph: &egraph_serialize::EGraph, roots: &[ClassId]) -> ExtractionResult {
         let (mut flat, flat_root) = FlatEgraph::new(egraph, roots);
 
-        let res = zdds::extract_zdd_new(&mut flat, flat_root, self.node_limit);
+        let mut res = zdds::extract_zdd_new(&mut flat, self.node_limit, flat_root);
+        res.remove(&flat_root);
         flat.convert_map(&res)
     }
 }
@@ -141,6 +142,10 @@ impl<'a> zdds::Egraph for FlatEgraph<'a> {
 
     fn cost(&self, node: &Id) -> Cost {
         self.nodes[*node].cost
+    }
+
+    fn print_node(&mut self, node: &Self::ENodeId) -> String {
+        format!("node-{node}")
     }
 
     fn expand_class(&mut self, class: &Id, nodes: &mut Vec<Self::ENodeId>) {

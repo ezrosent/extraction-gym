@@ -47,7 +47,7 @@ pub fn extract_zdd_new<E: Egraph>(
     root: E::EClassId,
 ) -> ExtractionChoices<E::EClassId, E::ENodeId> {
     let cost = compute_costs(egraph);
-    let mut zdd_state = ZddState::new(node_limit, 1 << 25);
+    let mut zdd_state = ZddState::new(node_limit, 1 << 30);
     let zdds =
         FixedPointSolver::<E, ZddSummary<E::ENodeId>>::new(egraph, &NullFilter, &mut zdd_state);
     let result = &zdds.results()[&root];
