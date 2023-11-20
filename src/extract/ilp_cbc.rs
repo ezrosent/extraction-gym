@@ -198,10 +198,7 @@ fn find_cycles(egraph: &EGraph, mut f: impl FnMut(ClassId, usize)) {
             let node = &egraph[node_id];
             for child in &node.children {
                 let child = n2c(child).clone();
-                pending
-                    .entry(child)
-                    .or_insert_with(Vec::new)
-                    .push((id.clone(), i));
+                pending.entry(child).or_default().push((id.clone(), i));
             }
 
             if node.is_leaf() {
